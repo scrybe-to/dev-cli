@@ -1,0 +1,67 @@
+{
+  "name": "@artifex/dev-cli",
+  "version": "0.1.0",
+  "description": "Generic, configurable Docker development CLI",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": {
+      "import": "./src/index.js",
+      "types": "./src/index.d.ts"
+    },
+    "./core": "./src/core/index.js",
+    "./commands": "./src/commands/index.js",
+    "./lib": "./src/index.js",
+    "./lib/docker": "./src/lib/docker.js",
+    "./lib/output": "./src/lib/output.js",
+    "./lib/banner": "./src/lib/banner.js",
+    "./lib/utils": "./src/lib/utils.js"
+  },
+  "bin": {
+    "dev-cli": "./bin/dev-cli.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "templates",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "dev": "node bin/dev-cli.js",
+    "build": "vite build && node scripts/create-binary.js",
+    "build:watch": "vite build --watch",
+    "clean": "rm -rf dist ../../scrybe-new",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "docker",
+    "development",
+    "cli",
+    "laravel",
+    "framework",
+    "devtools"
+  ],
+  "author": "Artifex",
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^5.6.0",
+    "cli-table3": "^0.6.5",
+    "commander": "^14.0.0",
+    "dotenv": "^16.3.1",
+    "enquirer": "^2.4.1",
+    "execa": "^9.6.0",
+    "figlet": "^1.9.3",
+    "gradient-string": "^3.0.0",
+    "joi": "^17.13.3",
+    "ora": "^8.1.1"
+  },
+  "devDependencies": {
+    "vite": "^7.1.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
