@@ -53,7 +53,7 @@ async function createBinary() {
     );
 
     // Calculate config path relative to binary
-    const configPath = path.relative(
+    const configRelativePath = path.relative(
       projectRoot,
       path.resolve(process.cwd(), 'cli.config.js')
     );
@@ -67,7 +67,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Set config path for the CLI to find
-process.env.CLI_CONFIG_PATH = resolve(__dirname, '${configPath}');
+process.env.CLI_CONFIG_PATH = resolve(__dirname, '${configRelativePath}');
 
 // Import the built CLI
 import(join(__dirname, '${distPath}'));

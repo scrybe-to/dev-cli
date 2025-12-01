@@ -1,6 +1,6 @@
 {
   "name": "@scrybe/dev-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Generic, configurable Docker development CLI",
   "type": "module",
   "main": "./src/index.js",
