@@ -2,12 +2,12 @@ import { pathToFileURL } from 'url';
 import path from 'path';
 import fs from 'fs';
 import Joi from 'joi';
-import { findComposeFile } from '../lib/docker.js';
 
 /**
- * Configuration schema validation
+ * Configuration schema validation - New generic schema
  */
 const configSchema = Joi.object({
+  // CLI Identity
   name: Joi.string().required()
     .description('CLI name (project name)'),
 
@@ -20,64 +20,192 @@ const configSchema = Joi.object({
   description: Joi.string().optional()
     .description('CLI description'),
 
-  framework: Joi.string().valid('laravel', 'rails', 'django', 'express', 'custom').required()
-    .description('Framework type'),
+  // Execution context configuration
+  execution: Joi.object({
+    mode: Joi.string().valid('docker', 'native', 'ssh').default('docker')
+      .description('Execution mode'),
 
-  containers: Joi.object().pattern(
-    Joi.string(),
-    Joi.string()
-  ).required()
-    .description('Container name mappings'),
+    docker: Joi.object({
+      composeFile: Joi.string().default('docker-compose.yml')
+        .description('Docker Compose file path'),
+      containers: Joi.object().pattern(
+        Joi.string(),
+        Joi.string()
+      ).default({})
+        .description('Container name mappings'),
+      reloadable: Joi.array().items(Joi.string()).default([])
+        .description('Containers to reload on configuration changes'),
+    }).default(),
 
-  hosts: Joi.array().items(Joi.string()).default([])
-    .description('Host entries for /etc/hosts'),
+    native: Joi.object({
+      shell: Joi.string().default(process.env.SHELL || '/bin/bash')
+        .description('Shell to use for native execution'),
+      workingDir: Joi.string().optional()
+        .description('Working directory (defaults to projectRoot)'),
+    }).default(),
 
-  commands: Joi.object({
-    docker: Joi.boolean().default(true),
-    framework: Joi.boolean().default(true),
-    database: Joi.boolean().default(true),
-    frontend: Joi.boolean().default(true),
-    system: Joi.boolean().default(true),
-    storage: Joi.boolean().default(true),
-    custom: Joi.array().items(Joi.string()).default([])
+    ssh: Joi.object({
+      host: Joi.string().allow('').default('')
+        .description('SSH host'),
+      user: Joi.string().allow('').default('')
+        .description('SSH user'),
+      port: Joi.number().default(22)
+        .description('SSH port'),
+      keyPath: Joi.string().allow('').optional()
+        .description('Path to SSH private key'),
+      workingDir: Joi.string().default('~')
+        .description('Remote working directory'),
+      strictHostKeyChecking: Joi.boolean().default(true)
+        .description('Enable strict host key checking'),
+    }).default(),
   }).default(),
 
+  // Database provider configuration
+  database: Joi.object({
+    driver: Joi.string().valid('mysql', 'postgres', 'postgresql', 'sqlite', 'none').default('none')
+      .description('Database driver'),
+    credentialSource: Joi.string().valid('env', 'config').default('env')
+      .description('Where to read credentials from'),
+    envMapping: Joi.object({
+      host: Joi.string().default('DB_HOST'),
+      port: Joi.string().default('DB_PORT'),
+      database: Joi.string().default('DB_DATABASE'),
+      username: Joi.string().default('DB_USERNAME'),
+      password: Joi.string().default('DB_PASSWORD'),
+    }).default()
+      .description('Environment variable mapping for credentials'),
+    credentials: Joi.object({
+      host: Joi.string().allow('').default(''),
+      port: Joi.number().optional(),
+      database: Joi.string().allow('').default(''),
+      username: Joi.string().allow('').default(''),
+      password: Joi.string().allow('').default(''),
+    }).default()
+      .description('Direct credentials (when credentialSource is "config")'),
+    backup: Joi.object({
+      path: Joi.string().default('./backups/database')
+        .description('Directory for database backups'),
+      format: Joi.string().valid('sql', 'dump', 'archive').default('sql')
+        .description('Backup format'),
+    }).default(),
+  }).default(),
+
+  // Storage provider configuration
+  storage: Joi.object({
+    driver: Joi.string().valid('filesystem', 's3', 'minio', 'none').default('filesystem')
+      .description('Storage driver'),
+    filesystem: Joi.object({
+      basePath: Joi.string().default('./storage')
+        .description('Base storage path'),
+      backupPath: Joi.string().default('./backups')
+        .description('Backup directory path'),
+      snapshotPath: Joi.string().default('./snapshots')
+        .description('Snapshot directory path'),
+    }).default(),
+    objectStorage: Joi.object({
+      endpoint: Joi.string().allow('').default('')
+        .description('S3/MinIO endpoint URL'),
+      accessKey: Joi.string().allow('').default('')
+        .description('Access key (or use AWS_ACCESS_KEY_ID env var)'),
+      secretKey: Joi.string().allow('').default('')
+        .description('Secret key (or use AWS_SECRET_ACCESS_KEY env var)'),
+      bucket: Joi.string().allow('').default('')
+        .description('Bucket name'),
+      region: Joi.string().default('us-east-1')
+        .description('AWS region'),
+      credentialSource: Joi.string().valid('env', 'config').default('env')
+        .description('Where to read credentials from'),
+      cliTool: Joi.string().valid('aws', 'mc', 'auto').default('auto')
+        .description('CLI tool to use (aws cli or minio client)'),
+    }).default(),
+  }).default(),
+
+  // Hosts management configuration
+  hosts: Joi.object({
+    driver: Joi.string().valid('etc-hosts', 'none').default('none')
+      .description('Hosts management driver'),
+    entries: Joi.array().items(Joi.string()).default([])
+      .description('Host entries to manage'),
+    ip: Joi.string().default('127.0.0.1')
+      .description('IP address for host entries'),
+  }).default(),
+
+  // Paths configuration
   paths: Joi.object({
-    projectRoot: Joi.string().default(process.cwd()),
-    composeFile: Joi.string().default('docker-compose.yml'),
-    envFile: Joi.string().default('.env'),
+    projectRoot: Joi.string().default(process.cwd())
+      .description('Project root directory'),
+    envFile: Joi.string().default('.env')
+      .description('Environment file path'),
   }).default(),
 
+  // Plugins configuration
+  plugins: Joi.object({
+    enabled: Joi.array().items(Joi.string()).default([])
+      .description('List of enabled plugins'),
+    config: Joi.object().pattern(
+      Joi.string(),
+      Joi.object()
+    ).default({})
+      .description('Plugin-specific configuration'),
+  }).default(),
+
+  // Command groups
+  commands: Joi.object({
+    docker: Joi.boolean().default(true)
+      .description('Enable Docker commands'),
+    database: Joi.boolean().default(true)
+      .description('Enable database commands'),
+    storage: Joi.boolean().default(true)
+      .description('Enable storage commands'),
+    system: Joi.boolean().default(true)
+      .description('Enable system commands'),
+    custom: Joi.array().items(Joi.string()).default([])
+      .description('Paths to custom command files'),
+  }).default(),
+
+  // Branding configuration
   branding: Joi.object({
-    banner: Joi.boolean().default(true),
+    banner: Joi.boolean().default(true)
+      .description('Show banner on startup'),
     asciiBanner: Joi.object({
-      text: Joi.string(),
-      font: Joi.string().default('Standard'),  // Any figlet font name
-      color: Joi.string().default('cyan'),
-      gradient: Joi.boolean().default(false),
-      gradientColors: Joi.array().items(Joi.string()).min(2).default(['#667eea', '#764ba2']),
-    }).optional(),
+      text: Joi.string().optional()
+        .description('Banner text (defaults to project name)'),
+      font: Joi.string().default('Standard')
+        .description('Figlet font name'),
+      color: Joi.string().default('cyan')
+        .description('Banner color'),
+      gradient: Joi.boolean().default(false)
+        .description('Enable gradient colors'),
+      gradientColors: Joi.array().items(Joi.string()).min(2).default(['#667eea', '#764ba2'])
+        .description('Gradient color stops'),
+    }).default(),
   }).default(),
+}).unknown(true); // Allow additional properties for flexibility
 
-  // Framework-specific configuration
-  laravel: Joi.object({
-    artisanPath: Joi.string().default('php artisan'),
-    composerPath: Joi.string().default('composer'),
-    testCommand: Joi.string().default('php artisan test'),
-    formatterCommand: Joi.string().default('./vendor/bin/pint'),
-  }).optional(),
+/**
+ * Find Docker Compose file from common variants
+ */
+function findComposeFile(projectRoot, preferredFile = null) {
+  if (preferredFile && fs.existsSync(preferredFile)) {
+    return preferredFile;
+  }
 
-  rails: Joi.object({
-    railsPath: Joi.string().default('rails'),
-    bundlerPath: Joi.string().default('bundle'),
-    testCommand: Joi.string().default('rails test'),
-  }).optional(),
+  const variants = [
+    'compose.yaml',
+    'compose.yml',
+    'docker-compose.yaml',
+    'docker-compose.yml',
+  ];
 
-  django: Joi.object({
-    managePath: Joi.string().default('python manage.py'),
-    testCommand: Joi.string().default('python manage.py test'),
-  }).optional(),
-}).unknown(false);
+  for (const variant of variants) {
+    const filePath = path.join(projectRoot, variant);
+    if (fs.existsSync(filePath)) {
+      return filePath;
+    }
+  }
+
+  return null;
+}
 
 /**
  * Load and validate configuration from cli.config.js
@@ -87,8 +215,6 @@ const configSchema = Joi.object({
  * @throws {Error} If config is invalid or not found
  */
 export async function loadConfig(configPath = null) {
-  // Determine config file path
-  // Priority: 1. passed configPath, 2. CLI_CONFIG_PATH env var, 3. cwd/cli.config.js
   const cwd = process.cwd();
   const defaultConfigPath = path.join(cwd, 'cli.config.js');
   const finalConfigPath = configPath || process.env.CLI_CONFIG_PATH || defaultConfigPath;
@@ -99,10 +225,11 @@ export async function loadConfig(configPath = null) {
       `Configuration file not found: ${finalConfigPath}\n\n` +
       `Create a cli.config.js file at your project root with:\n\n` +
       `export default {\n` +
-      `  name: 'myapp',\n` +
-      `  framework: 'laravel',\n` +
-      `  containers: { app: 'myapp_app' },\n` +
-      `  // ... more config\n` +
+      `  name: 'myproject',\n` +
+      `  execution: {\n` +
+      `    mode: 'docker',\n` +
+      `    docker: { containers: { app: 'myproject_app' } }\n` +
+      `  },\n` +
       `};\n`
     );
   }
@@ -135,21 +262,35 @@ export async function loadConfig(configPath = null) {
     );
   }
 
-  // Resolve relative paths to absolute
+  // Resolve paths to absolute
   value.paths.projectRoot = path.resolve(cwd, value.paths.projectRoot);
+  value.paths.envFile = path.resolve(value.paths.projectRoot, value.paths.envFile);
 
-  // Auto-detect compose file if the specified one doesn't exist
-  const specifiedComposeFile = path.resolve(value.paths.projectRoot, value.paths.composeFile);
-  const actualComposeFile = findComposeFile(value.paths.projectRoot, specifiedComposeFile);
-
-  if (actualComposeFile) {
-    value.paths.composeFile = actualComposeFile;
+  // Resolve native working directory
+  if (!value.execution.native.workingDir) {
+    value.execution.native.workingDir = value.paths.projectRoot;
   } else {
-    // Keep the specified path (will error later when trying to use it)
-    value.paths.composeFile = specifiedComposeFile;
+    value.execution.native.workingDir = path.resolve(
+      value.paths.projectRoot,
+      value.execution.native.workingDir
+    );
   }
 
-  value.paths.envFile = path.resolve(value.paths.projectRoot, value.paths.envFile);
+  // Auto-detect compose file if using Docker mode
+  if (value.execution.mode === 'docker') {
+    const composeFile = value.execution.docker.composeFile;
+    const specifiedComposeFile = path.isAbsolute(composeFile)
+      ? composeFile
+      : path.resolve(value.paths.projectRoot, composeFile);
+
+    const actualComposeFile = findComposeFile(value.paths.projectRoot, specifiedComposeFile);
+
+    if (actualComposeFile) {
+      value.execution.docker.composeFile = actualComposeFile;
+    } else {
+      value.execution.docker.composeFile = specifiedComposeFile;
+    }
+  }
 
   // Add metadata
   value._meta = {
@@ -161,82 +302,112 @@ export async function loadConfig(configPath = null) {
 }
 
 /**
- * Get default configuration for a framework
- * Useful for scaffolding new projects
+ * Get default configuration for a new project
  *
- * @param {string} framework - Framework type
- * @param {string} projectName - Project name
+ * @param {Object} options - Configuration options
+ * @param {string} options.name - Project name
+ * @param {string} options.executionMode - Execution mode (docker, native, ssh)
+ * @param {string} options.databaseDriver - Database driver
+ * @param {string[]} options.plugins - Plugins to enable
  * @returns {Object} Default configuration
  */
-export function getDefaultConfig(framework, projectName) {
-  const baseConfig = {
-    name: projectName,
+export function getDefaultConfig(options = {}) {
+  const {
+    name = 'myproject',
+    executionMode = 'docker',
+    databaseDriver = 'none',
+    plugins = [],
+  } = options;
+
+  const config = {
+    name,
     version: '1.0.0',
-    framework,
-    hosts: [`${projectName}.test`],
+    description: `Development CLI for ${name}`,
+
+    execution: {
+      mode: executionMode,
+      docker: {
+        composeFile: 'docker-compose.yml',
+        containers: {},
+        reloadable: [],
+      },
+      native: {
+        shell: process.env.SHELL || '/bin/bash',
+      },
+      ssh: {
+        host: '',
+        user: '',
+      },
+    },
+
+    database: {
+      driver: databaseDriver,
+      credentialSource: 'env',
+      envMapping: {
+        host: 'DB_HOST',
+        port: 'DB_PORT',
+        database: 'DB_DATABASE',
+        username: 'DB_USERNAME',
+        password: 'DB_PASSWORD',
+      },
+      backup: {
+        path: './backups/database',
+      },
+    },
+
+    storage: {
+      driver: 'filesystem',
+      filesystem: {
+        basePath: './storage',
+        backupPath: './backups',
+        snapshotPath: './snapshots',
+      },
+    },
+
+    hosts: {
+      driver: 'none',
+      entries: [],
+      ip: '127.0.0.1',
+    },
+
+    paths: {
+      projectRoot: process.cwd(),
+      envFile: '.env',
+    },
+
+    plugins: {
+      enabled: plugins,
+      config: {},
+    },
+
+    commands: {
+      docker: executionMode === 'docker',
+      database: databaseDriver !== 'none',
+      storage: true,
+      system: true,
+      custom: [],
+    },
+
+    branding: {
+      banner: true,
+      asciiBanner: {
+        text: name.toUpperCase(),
+        font: 'Standard',
+        gradient: false,
+      },
+    },
   };
 
-  switch (framework) {
-    case 'laravel':
-      return {
-        ...baseConfig,
-        description: `Docker Development Environment CLI for ${projectName}`,
-        containers: {
-          app: `${projectName}_app`,
-          database: `${projectName}_mysql`,
-          redis: `${projectName}_redis`,
-          webserver: `${projectName}_nginx`,
-          queue: `${projectName}_horizon`,
-        },
-        hosts: [
-          `${projectName}.test`,
-          `admin.${projectName}.test`,
-          `api.${projectName}.test`,
-          `mail.${projectName}.test`,
-        ],
-        laravel: {
-          artisanPath: 'php artisan',
-          composerPath: 'composer',
-          testCommand: 'php artisan test',
-          formatterCommand: './vendor/bin/pint',
-        },
-      };
+  return config;
+}
 
-    case 'rails':
-      return {
-        ...baseConfig,
-        containers: {
-          app: `${projectName}_web`,
-          database: `${projectName}_postgres`,
-          redis: `${projectName}_redis`,
-        },
-        rails: {
-          railsPath: 'rails',
-          bundlerPath: 'bundle',
-          testCommand: 'rails test',
-        },
-      };
-
-    case 'django':
-      return {
-        ...baseConfig,
-        containers: {
-          app: `${projectName}_web`,
-          database: `${projectName}_postgres`,
-          redis: `${projectName}_redis`,
-        },
-        django: {
-          managePath: 'python manage.py',
-          testCommand: 'python manage.py test',
-        },
-      };
-
-    default:
-      return {
-        ...baseConfig,
-        containers: {
-          app: `${projectName}_app`,
-        },
-      };
-  }
+/**
+ * Generate a configuration file content string
+ *
+ * @param {Object} config - Configuration object
+ * @returns {string} JavaScript config file content
+ */
+export function generateConfigFileContent(config) {
+  const content = `export default ${JSON.stringify(config, null, 2)};\n`;
+  return content;
 }

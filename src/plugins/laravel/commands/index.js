@@ -1,11 +1,18 @@
 /**
  * Laravel Framework Commands
  *
- * These commands are automatically loaded when framework: 'laravel' is set in config
+ * These commands are loaded when the Laravel plugin is enabled.
+ * Commands use the execution context instead of direct Docker calls.
  */
 
-import { execContainer } from '../../../lib/docker.js';
 import { status, colors } from '../../../lib/output.js';
+
+/**
+ * Get Laravel config from context
+ */
+function getLaravelConfig(context) {
+  return context.plugins?.config?.laravel || {};
+}
 
 /**
  * Run Laravel Artisan command
@@ -17,11 +24,12 @@ export const artisan = {
   description: 'Run Laravel Artisan command',
   allowUnknownOption: true,
   action: async (options, context, variadicArgs) => {
-    const { containers } = context;
-
-    // Commander passes variadic args as a single array argument
+    const executor = context.getExecutor();
     const commandArgs = Array.isArray(variadicArgs) ? variadicArgs : [];
-    await execContainer(containers.app, 'php', ['artisan', ...commandArgs]);
+
+    await executor.runInService('app', 'php', ['artisan', ...commandArgs], {
+      interactive: true,
+    });
   }
 };
 
@@ -35,11 +43,14 @@ export const composer = {
   description: 'Run Composer command',
   allowUnknownOption: true,
   action: async (options, context, variadicArgs) => {
-    const { containers } = context;
+    const executor = context.getExecutor();
+    const laravelConfig = getLaravelConfig(context);
+    const composerPath = laravelConfig.composerPath || 'composer';
 
-    // Commander passes variadic args as a single array argument
     const commandArgs = Array.isArray(variadicArgs) ? variadicArgs : [];
-    await execContainer(containers.app, 'composer', commandArgs);
+    await executor.runInService('app', composerPath, commandArgs, {
+      interactive: true,
+    });
   }
 };
 
@@ -52,14 +63,16 @@ export const tinker = {
   aliases: ['t'],
   description: 'Open Laravel Tinker REPL',
   action: async (options, context) => {
-    const { containers } = context;
+    const executor = context.getExecutor();
 
     status.info('Opening Laravel Tinker...');
     console.log(colors.dim('Use exit or Ctrl+C to quit'));
     console.log('');
 
     try {
-      await execContainer(containers.app, 'php', ['artisan', 'tinker']);
+      await executor.runInService('app', 'php', ['artisan', 'tinker'], {
+        interactive: true,
+      });
     } catch (error) {
       // Tinker exits normally when user quits, so don't show error for SIGINT
       if (error.exitCode !== 130) {
@@ -78,14 +91,15 @@ export const test = {
   description: 'Run tests (Pest/PHPUnit)',
   allowUnknownOption: true,
   action: async (options, context, variadicArgs) => {
-    const { containers } = context;
+    const executor = context.getExecutor();
 
     status.info('Running tests...');
     console.log('');
 
-    // Commander passes variadic args as a single array argument
     const commandArgs = Array.isArray(variadicArgs) ? variadicArgs : [];
-    await execContainer(containers.app, 'php', ['artisan', 'test', ...commandArgs]);
+    await executor.runInService('app', 'php', ['artisan', 'test', ...commandArgs], {
+      interactive: true,
+    });
   }
 };
 
@@ -98,16 +112,17 @@ export const pint = {
   description: 'Run Laravel Pint code formatter',
   allowUnknownOption: true,
   action: async (options, context, variadicArgs) => {
-    const { containers, framework } = context;
+    const executor = context.getExecutor();
+    const laravelConfig = getLaravelConfig(context);
+    const pintPath = laravelConfig.formatterCommand || './vendor/bin/pint';
 
     status.info('Running Laravel Pint...');
     console.log('');
 
-    const pintPath = framework.formatterCommand || './vendor/bin/pint';
-
-    // Commander passes variadic args as a single array argument
     const commandArgs = Array.isArray(variadicArgs) ? variadicArgs : [];
-    await execContainer(containers.app, pintPath, commandArgs);
+    await executor.runInService('app', pintPath, commandArgs, {
+      interactive: true,
+    });
 
     status.success('Code formatting completed');
   }
@@ -123,11 +138,12 @@ export const migrate = {
   description: 'Run database migrations',
   allowUnknownOption: true,
   action: async (options, context, variadicArgs) => {
-    const { containers } = context;
+    const executor = context.getExecutor();
 
-    // Commander passes variadic args as a single array argument
     const commandArgs = Array.isArray(variadicArgs) ? variadicArgs : [];
-    await execContainer(containers.app, 'php', ['artisan', 'migrate', ...commandArgs]);
+    await executor.runInService('app', 'php', ['artisan', 'migrate', ...commandArgs], {
+      interactive: true,
+    });
   }
 };
 
@@ -141,11 +157,12 @@ export const seed = {
   description: 'Run database seeders',
   allowUnknownOption: true,
   action: async (options, context, variadicArgs) => {
-    const { containers } = context;
+    const executor = context.getExecutor();
 
-    // Commander passes variadic args as a single array argument
     const commandArgs = Array.isArray(variadicArgs) ? variadicArgs : [];
-    await execContainer(containers.app, 'php', ['artisan', 'db:seed', ...commandArgs]);
+    await executor.runInService('app', 'php', ['artisan', 'db:seed', ...commandArgs], {
+      interactive: true,
+    });
   }
 };
 
@@ -157,13 +174,15 @@ export const fresh = {
   category: 'Database Commands',
   description: 'Fresh migration with seeds',
   action: async (options, context) => {
-    const { containers } = context;
+    const executor = context.getExecutor();
 
     status.info('Running fresh migration...');
 
-    await execContainer(containers.app, 'php', [
+    await executor.runInService('app', 'php', [
       'artisan', 'migrate:fresh', '--seed'
-    ]);
+    ], {
+      interactive: true,
+    });
 
     status.success('Database refreshed');
   }
@@ -178,11 +197,13 @@ export const optimize = {
   aliases: ['o'],
   description: 'Optimize Laravel (cache routes, config, views)',
   action: async (options, context) => {
-    const { containers } = context;
+    const executor = context.getExecutor();
 
     status.info('Optimizing Laravel...');
 
-    await execContainer(containers.app, 'php', ['artisan', 'optimize']);
+    await executor.runInService('app', 'php', ['artisan', 'optimize'], {
+      interactive: true,
+    });
 
     status.success('Laravel optimized');
   }
@@ -196,7 +217,7 @@ export const clear = {
   category: 'System',
   description: 'Clear all Laravel caches',
   action: async (options, context) => {
-    const { containers } = context;
+    const executor = context.getExecutor();
 
     status.info('Clearing Laravel caches...');
 
@@ -208,7 +229,7 @@ export const clear = {
     ];
 
     for (const cmd of commands) {
-      await execContainer(containers.app, 'php', ['artisan', cmd], {
+      await executor.runInService('app', 'php', ['artisan', cmd], {
         stdio: 'pipe'
       });
     }
@@ -226,11 +247,14 @@ export const php = {
   description: 'Run PHP command',
   allowUnknownOption: true,
   action: async (options, context, variadicArgs) => {
-    const { containers } = context;
+    const executor = context.getExecutor();
+    const laravelConfig = getLaravelConfig(context);
+    const phpPath = laravelConfig.phpPath || 'php';
 
-    // Commander passes variadic args as a single array argument
     const commandArgs = Array.isArray(variadicArgs) ? variadicArgs : [];
-    await execContainer(containers.app, 'php', commandArgs);
+    await executor.runInService('app', phpPath, commandArgs, {
+      interactive: true,
+    });
   }
 };
 
@@ -242,7 +266,7 @@ export const authToken = {
   category: 'Laravel Commands',
   description: 'Generate auth token for user (by email or ID)',
   action: async (options, context, user) => {
-    const { containers } = context;
+    const executor = context.getExecutor();
 
     if (!user) {
       status.error('User identifier required');
@@ -258,7 +282,6 @@ export const authToken = {
     console.log('');
 
     try {
-      // Create a PHP script to find user and generate token
       const phpScript = `
         $user = App\\Models\\User::where('email', '${user}')
           ->orWhere('id', '${user}')
@@ -274,10 +297,12 @@ export const authToken = {
         echo "Token: " . $token->plainTextToken . "\\n\\n";
       `;
 
-      await execContainer(containers.app, 'php', [
+      await executor.runInService('app', 'php', [
         'artisan', 'tinker', '--execute',
         phpScript.trim()
-      ]);
+      ], {
+        interactive: true,
+      });
     } catch (error) {
       status.error('Failed to generate auth token');
       throw error;
@@ -285,7 +310,7 @@ export const authToken = {
   }
 };
 
-// Export all commands as default array for easy loading
+// Export all commands as default array
 export default [
   artisan,
   composer,

@@ -1,7 +1,7 @@
 /**
  * Init Command
  *
- * Interactive setup wizard for configuring the CLI
+ * Interactive setup wizard for configuring the CLI with the new config format.
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'fs';
@@ -11,39 +11,120 @@ import { createInterface } from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
 import { status, colors } from '../../lib/output.js';
 import { generateBinary, addNpmScript } from '../../lib/binary-generator.js';
+import { getDefaultConfig, generateConfigFileContent } from '../../core/config-loader.js';
+import { getPluginManager } from '../../core/plugin-manager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 /**
- * Detect framework from project files
+ * Detect framework/plugin from project files
  *
  * @param {string} projectRoot - Project root directory
- * @returns {string|null} Detected framework or null
+ * @returns {string|null} Detected plugin or null
  */
-function detectFramework(projectRoot) {
+function detectPlugin(projectRoot) {
+  // Laravel detection
   if (existsSync(join(projectRoot, 'composer.json'))) {
     try {
       const composerJson = JSON.parse(readFileSync(join(projectRoot, 'composer.json'), 'utf8'));
       if (composerJson.require && composerJson.require['laravel/framework']) {
         return 'laravel';
       }
-      if (composerJson.require && composerJson.require['symfony/symfony']) {
-        return 'symfony';
+    } catch (e) {
+      // Ignore JSON parse errors
+    }
+  }
+
+  // Django detection
+  if (existsSync(join(projectRoot, 'requirements.txt'))) {
+    const content = readFileSync(join(projectRoot, 'requirements.txt'), 'utf8');
+    if (content.toLowerCase().includes('django')) {
+      return 'django';
+    }
+  }
+
+  if (existsSync(join(projectRoot, 'manage.py'))) {
+    return 'django';
+  }
+
+  // Rails detection
+  if (existsSync(join(projectRoot, 'Gemfile'))) {
+    const content = readFileSync(join(projectRoot, 'Gemfile'), 'utf8');
+    if (content.includes('rails')) {
+      return 'rails';
+    }
+  }
+
+  // Express/Node detection
+  if (existsSync(join(projectRoot, 'package.json'))) {
+    try {
+      const packageJson = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8'));
+      const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
+      if (deps.express) {
+        return 'express';
       }
     } catch (e) {
       // Ignore JSON parse errors
     }
   }
 
-  if (existsSync(join(projectRoot, 'requirements.txt'))) {
-    const content = readFileSync(join(projectRoot, 'requirements.txt'), 'utf8');
-    if (content.includes('Django')) {
-      return 'django';
+  return null;
+}
+
+/**
+ * Detect database from project files
+ *
+ * @param {string} projectRoot - Project root directory
+ * @returns {string} Detected database driver
+ */
+function detectDatabase(projectRoot) {
+  // Check .env file
+  const envPath = join(projectRoot, '.env');
+  if (existsSync(envPath)) {
+    const content = readFileSync(envPath, 'utf8');
+    if (content.includes('DB_CONNECTION=mysql') || content.includes('DB_DRIVER=mysql')) {
+      return 'mysql';
+    }
+    if (content.includes('DB_CONNECTION=pgsql') || content.includes('DB_DRIVER=postgres')) {
+      return 'postgres';
+    }
+    if (content.includes('DB_CONNECTION=sqlite') || content.includes('DB_DRIVER=sqlite')) {
+      return 'sqlite';
     }
   }
 
-  return null;
+  // Check docker-compose for database services
+  const composePaths = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'];
+  for (const composePath of composePaths) {
+    if (existsSync(join(projectRoot, composePath))) {
+      const content = readFileSync(join(projectRoot, composePath), 'utf8');
+      if (content.includes('mysql') || content.includes('mariadb')) {
+        return 'mysql';
+      }
+      if (content.includes('postgres')) {
+        return 'postgres';
+      }
+    }
+  }
+
+  return 'none';
+}
+
+/**
+ * Detect execution mode from project
+ *
+ * @param {string} projectRoot - Project root directory
+ * @returns {string} Execution mode
+ */
+function detectExecutionMode(projectRoot) {
+  const composePaths = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'];
+  for (const composePath of composePaths) {
+    if (existsSync(join(projectRoot, composePath))) {
+      return 'docker';
+    }
+  }
+  return 'native';
 }
 
 /**
@@ -86,64 +167,17 @@ async function prompt(rl, question, defaultValue = '') {
 }
 
 /**
- * Update cli.config.js with new values
+ * Prompt user for selection from choices
  *
- * @param {string} configPath - Path to config file
- * @param {Object} updates - Values to update
+ * @param {Object} rl - Readline interface
+ * @param {string} question - Question to ask
+ * @param {string[]} choices - Available choices
+ * @param {string} defaultValue - Default value
+ * @returns {Promise<string>} User's answer
  */
-function updateConfig(configPath, updates) {
-  let content = readFileSync(configPath, 'utf8');
-
-  // Split content into lines for more precise replacement
-  const lines = content.split('\n');
-
-  // Track nesting level to only replace top-level properties
-  let nestingLevel = 0;
-  let inExport = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    // Track when we enter the export default object
-    if (line.includes('export default {')) {
-      inExport = true;
-      nestingLevel = 1;
-      continue;
-    }
-
-    if (!inExport) continue;
-
-    // Track nesting level
-    const openBraces = (line.match(/{/g) || []).length;
-    const closeBraces = (line.match(/}/g) || []).length;
-    nestingLevel += openBraces - closeBraces;
-
-    // Only process top-level properties (nestingLevel === 1, before any braces on this line)
-    const effectiveNesting = nestingLevel - openBraces;
-
-    // Check each update key
-    for (const [key, value] of Object.entries(updates)) {
-      // Match top-level property (with optional comment before it)
-      const propRegex = new RegExp(`^(\\s*)(//.*\\n\\s*)?${key}:\\s*`);
-
-      if (effectiveNesting === 1 && propRegex.test(line)) {
-        // Handle different value types
-        let replacement;
-        if (typeof value === 'string') {
-          replacement = `'${value}'`;
-        } else if (typeof value === 'boolean') {
-          replacement = value.toString();
-        } else {
-          replacement = JSON.stringify(value);
-        }
-
-        // Replace the value keeping the indentation
-        lines[i] = line.replace(/:\s*[^,\n]+/, `: ${replacement}`);
-      }
-    }
-  }
-
-  writeFileSync(configPath, lines.join('\n'), 'utf8');
+async function promptSelect(rl, question, choices, defaultValue = '') {
+  console.log(colors.dim(`  Options: ${choices.join(', ')}`));
+  return prompt(rl, question, defaultValue);
 }
 
 /**
@@ -154,25 +188,40 @@ export const init = {
   category: 'Setup',
   description: 'Initialize and configure the CLI for your project',
   options: [
-    { flags: '--skip-binary', description: 'Skip custom binary generation' }
+    { flags: '--skip-binary', description: 'Skip custom binary generation' },
+    { flags: '--force', description: 'Overwrite existing configuration' }
   ],
-  action: async (options, context) => {
+  action: async (options) => {
     const projectRoot = process.cwd();
     const configPath = join(projectRoot, 'cli.config.js');
 
-    console.log(colors.bold(colors.cyan('\n🚀 CLI Setup Wizard\n')));
+    console.log(colors.bold(colors.cyan('\n  CLI Setup Wizard\n')));
 
-    if (!existsSync(configPath)) {
-      status.error('cli.config.js not found. Run npm install first.');
-      process.exit(1);
+    // Check for existing config
+    if (existsSync(configPath) && !options.force) {
+      status.warning('cli.config.js already exists');
+      console.log(colors.dim('  Use --force to overwrite'));
+      console.log('');
+      return;
     }
 
     const rl = createInterface({ input, output });
 
     try {
-      // Get suggested values
+      // Detect project settings
       const suggestedName = getSuggestedName(projectRoot);
-      const detectedFramework = detectFramework(projectRoot);
+      const detectedPlugin = detectPlugin(projectRoot);
+      const detectedDatabase = detectDatabase(projectRoot);
+      const detectedMode = detectExecutionMode(projectRoot);
+
+      // Show detections
+      console.log(colors.bold('Detected settings:'));
+      console.log(`  Execution mode: ${colors.cyan(detectedMode)}`);
+      if (detectedPlugin) {
+        console.log(`  Framework: ${colors.cyan(detectedPlugin)}`);
+      }
+      console.log(`  Database: ${colors.cyan(detectedDatabase)}`);
+      console.log('');
 
       // Prompt for project name
       const projectName = await prompt(
@@ -190,12 +239,12 @@ export const init = {
       // Prompt for binary name
       const binaryName = await prompt(
         rl,
-        colors.cyan('? Binary name (leave blank to use project name)'),
-        ''
+        colors.cyan('? Binary name (command to run)'),
+        projectName
       );
 
-      // Validate binary name if provided
-      if (binaryName && !/^[a-z0-9-_]+$/i.test(binaryName)) {
+      // Validate binary name
+      if (!/^[a-z0-9-_]+$/i.test(binaryName)) {
         status.error('Binary name must contain only letters, numbers, hyphens, and underscores');
         process.exit(1);
       }
@@ -207,50 +256,76 @@ export const init = {
         `Development CLI for ${projectName}`
       );
 
-      // Confirm detected framework or ask
-      let framework = detectedFramework;
-      if (detectedFramework) {
-        console.log(colors.green(`✓ Detected framework: ${detectedFramework}`));
-        const useDetected = await prompt(
-          rl,
-          colors.cyan('? Use detected framework? (y/n)'),
-          'y'
-        );
-        if (useDetected.toLowerCase() !== 'y') {
-          framework = await prompt(
+      // Prompt for execution mode
+      const executionMode = await promptSelect(
+        rl,
+        colors.cyan('? Execution mode'),
+        ['docker', 'native', 'ssh'],
+        detectedMode
+      );
+
+      // Prompt for database
+      const databaseDriver = await promptSelect(
+        rl,
+        colors.cyan('? Database'),
+        ['mysql', 'postgres', 'sqlite', 'none'],
+        detectedDatabase
+      );
+
+      // Prompt for plugins
+      const pluginManager = getPluginManager();
+      const availablePlugins = await pluginManager.listAvailable();
+      let enabledPlugins = [];
+
+      if (availablePlugins.length > 0) {
+        console.log(colors.dim(`  Available plugins: ${availablePlugins.join(', ')}`));
+
+        if (detectedPlugin && availablePlugins.includes(detectedPlugin)) {
+          const useDetected = await prompt(
             rl,
-            colors.cyan('? Framework (laravel/rails/django/express/custom)'),
-            'custom'
+            colors.cyan(`? Enable ${detectedPlugin} plugin? (y/n)`),
+            'y'
           );
+          if (useDetected.toLowerCase() === 'y') {
+            enabledPlugins.push(detectedPlugin);
+          }
+        } else {
+          const pluginAnswer = await prompt(
+            rl,
+            colors.cyan('? Enable plugins (comma-separated, or "none")'),
+            'none'
+          );
+          if (pluginAnswer && pluginAnswer.toLowerCase() !== 'none') {
+            enabledPlugins = pluginAnswer.split(',').map(p => p.trim()).filter(Boolean);
+          }
         }
-      } else {
-        framework = await prompt(
-          rl,
-          colors.cyan('? Framework (laravel/rails/django/express/custom)'),
-          'custom'
-        );
       }
 
-      // Update configuration
-      status.info('Updating configuration...');
-      const updates = {
+      // Generate configuration
+      status.info('Generating configuration...');
+
+      const config = getDefaultConfig({
         name: projectName,
-        description: description,
-        framework: framework,
-      };
+        executionMode: executionMode,
+        databaseDriver: databaseDriver,
+        plugins: enabledPlugins,
+      });
 
-      // Only add binaryName if it's different from projectName
-      if (binaryName && binaryName !== projectName) {
-        updates.binaryName = binaryName;
+      // Update with user inputs
+      config.description = description;
+      if (binaryName !== projectName) {
+        config.binaryName = binaryName;
       }
+      config.branding.asciiBanner.text = projectName.toUpperCase();
 
-      updateConfig(configPath, updates);
+      // Write configuration file
+      const configContent = generateConfigFileContent(config);
+      writeFileSync(configPath, configContent, 'utf8');
 
-      status.success('Configuration updated');
+      status.success('Configuration created: cli.config.js');
 
       // Generate custom binary
       if (!options.skipBinary) {
-        // Use binaryName if specified, otherwise use projectName
         const actualBinaryName = binaryName || projectName;
 
         const createBinary = await prompt(
@@ -275,11 +350,11 @@ export const init = {
               status.success(`Added script to package.json: npm run ${actualBinaryName}`);
             }
 
-            console.log(colors.green('\n✨ Setup complete!\n'));
+            console.log(colors.green('\n  Setup complete!\n'));
             console.log('You can now run:');
             console.log(colors.cyan(`  ./${actualBinaryName} --help`));
             console.log(colors.cyan(`  npm run ${actualBinaryName} --help`));
-            console.log(colors.cyan(`  npx dev-cli --help\n`));
+            console.log('');
           } catch (error) {
             status.error(`Failed to generate binary: ${error.message}`);
             if (process.env.DEBUG === '1') {
@@ -287,18 +362,21 @@ export const init = {
             }
           }
         } else {
-          console.log(colors.green('\n✨ Setup complete!\n'));
+          console.log(colors.green('\n  Setup complete!\n'));
           console.log('You can run:');
           console.log(colors.cyan(`  npx dev-cli --help\n`));
         }
       } else {
-        console.log(colors.green('\n✨ Setup complete!\n'));
+        console.log(colors.green('\n  Setup complete!\n'));
         console.log('You can run:');
         console.log(colors.cyan(`  npx dev-cli --help\n`));
       }
 
     } catch (error) {
       status.error(`Setup failed: ${error.message}`);
+      if (process.env.DEBUG === '1') {
+        console.error(error);
+      }
       process.exit(1);
     } finally {
       rl.close();

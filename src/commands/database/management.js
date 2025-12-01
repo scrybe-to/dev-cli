@@ -1,63 +1,40 @@
 /**
  * Database Management Commands
  *
- * Commands for managing database operations, backups, and connections
+ * Commands for managing database operations, backups, and connections.
+ * Uses the database provider pattern for database-agnostic operations.
  */
 
-import { execContainer } from '../../lib/docker.js';
 import { status, colors } from '../../lib/output.js';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, createReadStream, createWriteStream } from 'fs';
+import { existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import Enquirer from 'enquirer';
 
 /**
- * Get database credentials from environment
+ * Connect to database CLI
  */
-function getDbCredentials(context) {
-  const projectRoot = context.config?.paths?.projectRoot || process.cwd();
-  const envPath = join(projectRoot, '.env');
-
-  if (!existsSync(envPath)) {
-    throw new Error('.env file not found');
-  }
-
-  const envContent = readFileSync(envPath, 'utf-8');
-  const getEnvValue = (key, defaultValue = '') => {
-    const match = envContent.match(new RegExp(`^${key}=(.*)$`, 'm'));
-    return match ? match[1].replace(/^["']|["']$/g, '') : defaultValue;
-  };
-
-  return {
-    database: getEnvValue('DB_DATABASE', 'forge'),
-    username: getEnvValue('DB_USERNAME', 'root'),
-    password: getEnvValue('DB_PASSWORD', 'root'),
-    host: getEnvValue('DB_HOST', 'localhost'),
-  };
-}
-
-/**
- * Connect to MySQL CLI
- */
-export const mysql = {
-  name: 'mysql [args...]',
+export const dbConnect = {
+  name: 'db [args...]',
   category: 'Database Commands',
-  description: 'Connect to MySQL CLI',
+  description: 'Connect to database CLI',
   allowUnknownOption: true,
   action: async (options, context, variadicArgs) => {
-    const { containers } = context;
-    const credentials = getDbCredentials(context);
+    const provider = context.getDatabaseProvider();
 
-    status.info('Connecting to MySQL...');
+    if (!provider) {
+      status.error('Database is not configured');
+      console.log('');
+      console.log(colors.dim('Configure database in cli.config.js:'));
+      console.log(colors.dim('  database: { driver: "mysql", ... }'));
+      console.log('');
+      return;
+    }
+
+    const driverName = context.config.database?.driver || 'database';
+    status.info(`Connecting to ${driverName}...`);
     console.log('');
 
-    const commandArgs = Array.isArray(variadicArgs) ? variadicArgs : [];
-
-    await execContainer(containers.database || containers.mysql, 'mysql', [
-      '-u', credentials.username,
-      `-p${credentials.password}`,
-      credentials.database,
-      ...commandArgs
-    ]);
+    await provider.connect({ service: 'database' });
   }
 };
 
@@ -69,12 +46,14 @@ export const redis = {
   category: 'Database Commands',
   description: 'Connect to Redis CLI',
   action: async (options, context) => {
-    const { containers } = context;
+    const executor = context.getExecutor();
 
     status.info('Connecting to Redis...');
     console.log('');
 
-    await execContainer(containers.redis, 'redis-cli');
+    await executor.runInService('cache', 'redis-cli', [], {
+      interactive: true,
+    });
   }
 };
 
@@ -84,43 +63,24 @@ export const redis = {
 export const backup = {
   name: 'db:backup',
   category: 'Database Commands',
-  description: 'Backup database to storage/backups',
+  description: 'Backup database',
   action: async (options, context) => {
-    const { containers } = context;
-    const credentials = getDbCredentials(context);
-    const projectRoot = context.config?.paths?.projectRoot || process.cwd();
+    const provider = context.getDatabaseProvider();
+
+    if (!provider) {
+      status.error('Database is not configured');
+      console.log('');
+      console.log(colors.dim('Configure database in cli.config.js:'));
+      console.log(colors.dim('  database: { driver: "mysql", ... }'));
+      console.log('');
+      return;
+    }
 
     status.info('Backing up database...');
 
-    const backupsDir = join(projectRoot, 'storage', 'backups');
-    if (!existsSync(backupsDir)) {
-      mkdirSync(backupsDir, { recursive: true });
-    }
-
-    const timestamp = new Date().toISOString().replace(/[.:]/g, '-');
-    const backupFile = join(backupsDir, `backup_${timestamp}.sql`);
-
     try {
-      // Create write stream
-      const stream = createWriteStream(backupFile);
-
-      // Execute mysqldump and pipe to file
-      const { execa } = await import('execa');
-      const subprocess = execa('docker', [
-        'exec',
-        containers.database || containers.mysql,
-        'mysqldump',
-        '-u', credentials.username,
-        `-p${credentials.password}`,
-        credentials.database
-      ], {
-        stdout: 'pipe'
-      });
-
-      subprocess.stdout.pipe(stream);
-      await subprocess;
-
-      status.success(`Database backed up to ${backupFile}`);
+      const backupPath = await provider.backup(null, { service: 'database' });
+      status.success(`Database backed up to ${backupPath}`);
     } catch (error) {
       status.error('Backup failed');
       throw error;
@@ -136,45 +96,24 @@ export const restore = {
   category: 'Database Commands',
   description: 'Restore database from backup',
   action: async (options, context, file) => {
-    const { containers } = context;
-    const credentials = getDbCredentials(context);
-    const projectRoot = context.config?.paths?.projectRoot || process.cwd();
+    const provider = context.getDatabaseProvider();
+
+    if (!provider) {
+      status.error('Database is not configured');
+      return;
+    }
 
     let selectedFile = file;
 
     // If no file specified, show interactive selection
     if (!selectedFile) {
-      const backupsDir = join(projectRoot, 'storage', 'backups');
-      const snapshotsDir = join(projectRoot, 'storage', 'snapshots');
-      const allFiles = [];
+      const backups = await provider.listBackups();
+      const snapshots = await provider.listSnapshots();
 
-      // Collect regular backups
-      if (existsSync(backupsDir)) {
-        const backupFiles = readdirSync(backupsDir)
-          .filter(f => f.endsWith('.sql'))
-          .map(f => ({
-            name: f,
-            path: join('storage', 'backups', f),
-            fullPath: join(backupsDir, f),
-            type: 'backup',
-            stats: statSync(join(backupsDir, f))
-          }));
-        allFiles.push(...backupFiles);
-      }
-
-      // Collect snapshots
-      if (existsSync(snapshotsDir)) {
-        const snapshotFiles = readdirSync(snapshotsDir)
-          .filter(f => f.endsWith('.sql'))
-          .map(f => ({
-            name: f,
-            path: join('storage', 'snapshots', f),
-            fullPath: join(snapshotsDir, f),
-            type: 'snapshot',
-            stats: statSync(join(snapshotsDir, f))
-          }));
-        allFiles.push(...snapshotFiles);
-      }
+      const allFiles = [
+        ...backups.map(b => ({ ...b, type: 'backup' })),
+        ...snapshots.map(s => ({ ...s, type: 'snapshot' })),
+      ];
 
       if (allFiles.length === 0) {
         status.error('No backup files found');
@@ -184,26 +123,25 @@ export const restore = {
         return;
       }
 
-      // Sort all files by date (newest first)
-      allFiles.sort((a, b) => b.stats.mtime - a.stats.mtime);
+      // Sort by date (newest first)
+      allFiles.sort((a, b) => new Date(b.created) - new Date(a.created));
 
       console.log(colors.blue('Select a backup to restore:'));
       console.log('');
 
-      // Create choices for the select prompt
-      const choices = allFiles.map(file => {
-        const size = (file.stats.size / 1024 / 1024).toFixed(2) + ' MB';
-        const date = file.stats.mtime.toLocaleString();
-        const typeLabel = file.type === 'snapshot' ? colors.cyan('[SNAPSHOT]') : colors.magenta('[BACKUP]');
+      const choices = allFiles.map(f => {
+        const size = (f.size / 1024 / 1024).toFixed(2) + ' MB';
+        const date = new Date(f.created).toLocaleString();
+        const typeLabel = f.type === 'snapshot'
+          ? colors.cyan('[SNAPSHOT]')
+          : colors.magenta('[BACKUP]');
 
         return {
-          name: `${typeLabel} ${file.name} ${colors.dim(`(${size}, ${date})`)}`,
-          value: file.path,
-          hint: file.path
+          name: `${typeLabel} ${f.name} ${colors.dim(`(${size}, ${date})`)}`,
+          value: f.path,
         };
       });
 
-      // Add cancel option
       choices.push({
         name: colors.yellow('Cancel'),
         value: null
@@ -215,7 +153,6 @@ export const restore = {
         message: 'Choose backup file',
         choices: choices,
         result(value) {
-          // Return the raw value, not the display name
           return this.focused.value;
         }
       });
@@ -229,10 +166,8 @@ export const restore = {
       console.log('');
     }
 
-    const backupFile = join(projectRoot, selectedFile);
-
-    if (!existsSync(backupFile)) {
-      status.error(`Backup file not found: ${backupFile}`);
+    if (!existsSync(selectedFile)) {
+      status.error(`Backup file not found: ${selectedFile}`);
       return;
     }
 
@@ -249,29 +184,10 @@ export const restore = {
       return;
     }
 
-    status.info(`Restoring database from ${backupFile}...`);
+    status.info(`Restoring database from ${selectedFile}...`);
 
     try {
-      // Create read stream
-      const stream = createReadStream(backupFile);
-
-      // Execute mysql and pipe from file
-      const { execa } = await import('execa');
-      const subprocess = execa('docker', [
-        'exec',
-        '-i',
-        containers.database || containers.mysql,
-        'mysql',
-        '-u', credentials.username,
-        `-p${credentials.password}`,
-        credentials.database
-      ], {
-        stdin: 'pipe'
-      });
-
-      stream.pipe(subprocess.stdin);
-      await subprocess;
-
+      await provider.restore(selectedFile, { service: 'database' });
       status.success('Database restored');
     } catch (error) {
       status.error('Restore failed');
@@ -288,45 +204,18 @@ export const snapshot = {
   category: 'Database Commands',
   description: 'Create quick database snapshot',
   action: async (options, context) => {
-    const { containers } = context;
-    const credentials = getDbCredentials(context);
-    const projectRoot = context.config?.paths?.projectRoot || process.cwd();
+    const provider = context.getDatabaseProvider();
+
+    if (!provider) {
+      status.error('Database is not configured');
+      return;
+    }
 
     status.info('Creating quick database snapshot...');
 
-    const snapshotsDir = join(projectRoot, 'storage', 'snapshots');
-    if (!existsSync(snapshotsDir)) {
-      mkdirSync(snapshotsDir, { recursive: true });
-    }
-
-    const timestamp = new Date().toISOString().replace(/[.:]/g, '-');
-    const snapshotFile = join(snapshotsDir, `snapshot_${timestamp}.sql`);
-
     try {
-      // Create write stream
-      const stream = createWriteStream(snapshotFile);
-
-      // Execute mysqldump with single-transaction for faster snapshots
-      const { execa } = await import('execa');
-      const subprocess = execa('docker', [
-        'exec',
-        containers.database || containers.mysql,
-        'mysqldump',
-        '-u', credentials.username,
-        `-p${credentials.password}`,
-        '--single-transaction',
-        credentials.database
-      ], {
-        stdout: 'pipe'
-      });
-
-      subprocess.stdout.pipe(stream);
-      await subprocess;
-
-      // Save as latest snapshot
-      writeFileSync(join(snapshotsDir, '.latest'), snapshotFile);
-
-      status.success(`Snapshot saved: ${snapshotFile}`);
+      const snapshotPath = await provider.snapshot();
+      status.success(`Snapshot saved: ${snapshotPath}`);
     } catch (error) {
       status.error('Snapshot failed');
       throw error;
@@ -342,13 +231,16 @@ export const rollback = {
   category: 'Database Commands',
   description: 'Rollback to latest snapshot',
   action: async (options, context) => {
-    const { containers } = context;
-    const credentials = getDbCredentials(context);
-    const projectRoot = context.config?.paths?.projectRoot || process.cwd();
+    const provider = context.getDatabaseProvider();
 
-    const latestFile = join(projectRoot, 'storage', 'snapshots', '.latest');
+    if (!provider) {
+      status.error('Database is not configured');
+      return;
+    }
 
-    if (!existsSync(latestFile)) {
+    const snapshots = await provider.listSnapshots();
+
+    if (snapshots.length === 0) {
       status.error('No snapshots found');
       console.log('');
       console.log(colors.dim('Create one with: db:snapshot'));
@@ -356,18 +248,13 @@ export const rollback = {
       return;
     }
 
-    const snapshotFile = readFileSync(latestFile, 'utf-8').trim();
-
-    if (!existsSync(snapshotFile)) {
-      status.error(`Latest snapshot file not found: ${snapshotFile}`);
-      return;
-    }
+    const latest = snapshots[0];
 
     // Confirm before rolling back
     const confirmResponse = await Enquirer.prompt({
       type: 'confirm',
       name: 'confirmed',
-      message: `This will restore the database to snapshot: ${snapshotFile}. Continue?`,
+      message: `This will restore the database to snapshot: ${latest.name}. Continue?`,
       initial: false
     });
 
@@ -376,29 +263,10 @@ export const rollback = {
       return;
     }
 
-    status.info(`Rolling back to ${snapshotFile}...`);
+    status.info(`Rolling back to ${latest.name}...`);
 
     try {
-      // Create read stream
-      const stream = createReadStream(snapshotFile);
-
-      // Execute mysql and pipe from file
-      const { execa } = await import('execa');
-      const subprocess = execa('docker', [
-        'exec',
-        '-i',
-        containers.database || containers.mysql,
-        'mysql',
-        '-u', credentials.username,
-        `-p${credentials.password}`,
-        credentials.database
-      ], {
-        stdin: 'pipe'
-      });
-
-      stream.pipe(subprocess.stdin);
-      await subprocess;
-
+      await provider.rollback();
       status.success('Database rolled back');
     } catch (error) {
       status.error('Rollback failed');
@@ -415,48 +283,57 @@ export const dbSize = {
   category: 'Database Commands',
   description: 'Show database size',
   action: async (options, context) => {
-    const { containers } = context;
-    const credentials = getDbCredentials(context);
+    const provider = context.getDatabaseProvider();
 
-    const query = `SELECT table_schema AS 'Database', ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size_MB' FROM information_schema.tables WHERE table_schema = '${credentials.database}' GROUP BY table_schema;`;
+    if (!provider) {
+      status.error('Database is not configured');
+      return;
+    }
 
     try {
-      // Use batch mode with no column names for easy parsing
-      const { execa } = await import('execa');
-      const { stdout } = await execa('docker', [
-        'exec',
-        containers.database || containers.mysql,
-        'mysql',
-        '-u', credentials.username,
-        `-p${credentials.password}`,
-        '-B', '-N', '-e', query
-      ], { stdio: 'pipe' });
-
-      const line = stdout.trim().split('\n')[0] || '';
-
-      if (!line) {
-        status.warning('Could not determine database size');
-        return;
-      }
-
-      const [db, sizeStr] = line.split('\t');
-      const size = parseFloat(sizeStr);
+      const sizeInfo = await provider.getSize();
 
       // Build a pretty table
       const Table = (await import('cli-table3')).default;
       const table = new Table({
-        head: [colors.cyan('Database'), colors.cyan('Size (MB)')],
+        head: [colors.cyan('Database'), colors.cyan('Size')],
         style: { head: [], border: [] }
       });
 
       table.push([
-        colors.bold(db),
-        colors.bold(isNaN(size) ? sizeStr : size.toFixed(2))
+        colors.bold(sizeInfo.database),
+        colors.bold(sizeInfo.formatted)
       ]);
 
       console.log('');
       console.log(table.toString());
       console.log('');
+
+      // Show table sizes if available
+      if (sizeInfo.tables && sizeInfo.tables.length > 0) {
+        const tableTable = new Table({
+          head: [colors.cyan('Table'), colors.cyan('Size (MB)')],
+          style: { head: [], border: [] }
+        });
+
+        for (const t of sizeInfo.tables.slice(0, 10)) {
+          tableTable.push([
+            t.table,
+            t.sizeMb !== null ? t.sizeMb.toFixed(2) : 'N/A'
+          ]);
+        }
+
+        if (sizeInfo.tables.length > 10) {
+          tableTable.push([
+            colors.dim(`... and ${sizeInfo.tables.length - 10} more`),
+            ''
+          ]);
+        }
+
+        console.log(colors.blue('Table Sizes:'));
+        console.log(tableTable.toString());
+        console.log('');
+      }
     } catch (error) {
       status.error('Failed to get database size');
       throw error;
@@ -464,13 +341,85 @@ export const dbSize = {
   }
 };
 
+/**
+ * List database backups
+ */
+export const listBackups = {
+  name: 'db:list',
+  category: 'Database Commands',
+  description: 'List available database backups',
+  action: async (options, context) => {
+    const provider = context.getDatabaseProvider();
+
+    if (!provider) {
+      status.error('Database is not configured');
+      return;
+    }
+
+    const backups = await provider.listBackups();
+    const snapshots = await provider.listSnapshots();
+
+    if (backups.length === 0 && snapshots.length === 0) {
+      status.info('No backups or snapshots found');
+      console.log('');
+      console.log(colors.dim('Create backups with: db:backup'));
+      console.log(colors.dim('Create snapshots with: db:snapshot'));
+      console.log('');
+      return;
+    }
+
+    const Table = (await import('cli-table3')).default;
+
+    if (backups.length > 0) {
+      console.log('');
+      console.log(colors.blue('Backups:'));
+      const table = new Table({
+        head: [colors.cyan('Name'), colors.cyan('Size'), colors.cyan('Created')],
+        style: { head: [], border: [] }
+      });
+
+      for (const b of backups) {
+        table.push([
+          b.name,
+          (b.size / 1024 / 1024).toFixed(2) + ' MB',
+          new Date(b.created).toLocaleString()
+        ]);
+      }
+
+      console.log(table.toString());
+    }
+
+    if (snapshots.length > 0) {
+      console.log('');
+      console.log(colors.blue('Snapshots:'));
+      const table = new Table({
+        head: [colors.cyan('Name'), colors.cyan('Size'), colors.cyan('Created')],
+        style: { head: [], border: [] }
+      });
+
+      for (const s of snapshots) {
+        table.push([
+          s.name,
+          (s.size / 1024 / 1024).toFixed(2) + ' MB',
+          new Date(s.created).toLocaleString()
+        ]);
+      }
+
+      console.log(table.toString());
+    }
+
+    console.log('');
+  }
+};
+
 // Export all commands
 export default [
-  mysql,
+  dbConnect,
   redis,
   backup,
   restore,
   snapshot,
   rollback,
   dbSize,
+  listBackups,
 ];

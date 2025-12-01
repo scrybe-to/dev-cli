@@ -11,11 +11,10 @@ import { getGradient, getGradientNames, gradientPresets } from '../../lib/gradie
 import gradientString from 'gradient-string';
 
 /**
- * Banner preview command
+ * Preview subcommand - quick banner preview with specific options
  */
-export const banner = {
-  name: 'banner',
-  category: 'Setup',
+const previewSubcommand = {
+  name: 'preview',
   description: 'Preview ASCII banner with different fonts and colors',
   options: [
     { flags: '-t, --text <text>', description: 'Text to display (defaults to project name)' },
@@ -103,19 +102,18 @@ export const banner = {
     } catch (error) {
       status.error(`Failed to generate banner: ${error.message}`);
       if (error.message.includes('font')) {
-        console.log(colors.yellow('\nTip: Run "banner --list-fonts" to see available fonts'));
+        console.log(colors.yellow('\nTip: Run "banner preview --list-fonts" to see available fonts'));
       }
     }
   }
 };
 
 /**
- * Interactive banner preview
+ * Browse subcommand - interactive font/gradient browser
  */
-export const preview = {
-  name: 'preview',
-  category: 'Setup',
-  description: 'Interactive banner preview with font/gradient navigation',
+const browseSubcommand = {
+  name: 'browse',
+  description: 'Interactive banner browser with font/gradient navigation',
   options: [
     { flags: '-t, --text <text>', description: 'Text to display (defaults to project name)' },
     { flags: '-g, --gradient <preset>', description: 'Gradient preset name or colors (e.g., synthwave or #667eea,#764ba2)' },
@@ -349,4 +347,12 @@ asciiBanner: {
   }
 };
 
-export default [banner, preview];
+/**
+ * Banner parent command with subcommands
+ */
+export default {
+  name: 'banner',
+  category: 'Setup',
+  description: 'ASCII banner preview and customization tools',
+  subcommands: [previewSubcommand, browseSubcommand],
+};

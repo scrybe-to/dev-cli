@@ -1,13 +1,28 @@
 /**
  * Docker Helper Commands
  *
- * Utility commands to help with Docker configuration
+ * Utility commands to help with Docker configuration.
+ * Uses the new config structure at execution.docker.containers
  */
 
 import { execa } from 'execa';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { status, colors } from '../../lib/output.js';
+
+/**
+ * Get Docker configuration from context
+ */
+function getDockerConfig(context) {
+  return context.config?.execution?.docker || {};
+}
+
+/**
+ * Get container mappings from config
+ */
+function getContainers(context) {
+  return getDockerConfig(context).containers || {};
+}
 
 /**
  * Detect container type from name
@@ -110,6 +125,7 @@ function detectIndentation(content) {
 
 /**
  * Update config file with container mappings
+ * Now targets execution.docker.containers in the new config structure
  */
 function updateConfigContainers(configPath, containers) {
   let content = readFileSync(configPath, 'utf8');
@@ -119,18 +135,18 @@ function updateConfigContainers(configPath, containers) {
 
   // Build the containers object string with detected indentation
   const containerLines = Object.entries(containers)
-    .map(([alias, name]) => `${indent}${indent}${alias}: '${name}',`)
+    .map(([alias, name]) => `${indent}${indent}${indent}${alias}: '${name}',`)
     .join('\n');
 
-  const containersBlock = `containers: {\n${containerLines}\n${indent}}`;
+  const containersBlock = `containers: {\n${containerLines}\n${indent}${indent}}`;
 
-  // Try to replace existing containers block
+  // Try to replace existing containers block in execution.docker
   const containersRegex = /containers:\s*\{[^}]*\}/s;
   if (containersRegex.test(content)) {
     content = content.replace(containersRegex, containersBlock);
   } else {
     // If not found, warn user
-    throw new Error('Could not find containers block in config');
+    throw new Error('Could not find containers block in config. Add execution.docker.containers: {} to your config first.');
   }
 
   writeFileSync(configPath, content, 'utf8');
@@ -253,13 +269,20 @@ export const listContainers = {
   category: 'Container Management',
   description: 'List configured container aliases',
   action: async (options, context) => {
-    const { containers } = context;
+    const containers = getContainers(context);
 
     if (!containers || Object.keys(containers).length === 0) {
       status.warning('No containers configured');
       console.log('');
-      console.log('Run this to map your containers:');
-      console.log(colors.cyan('  mc containers:map'));
+      console.log(colors.dim('Configure containers in cli.config.js:'));
+      console.log(colors.dim('  execution: {'));
+      console.log(colors.dim('    docker: {'));
+      console.log(colors.dim('      containers: { app: "myapp", database: "myapp_db" }'));
+      console.log(colors.dim('    }'));
+      console.log(colors.dim('  }'));
+      console.log('');
+      console.log('Or run this to auto-detect:');
+      console.log(colors.cyan('  containers:map'));
       console.log('');
       return;
     }

@@ -1,9 +1,40 @@
 /**
  * Core Docker Compose Commands
+ *
+ * Uses the execution context pattern for Docker operations.
+ * Container names are configured in cli.config.js under execution.docker.containers
  */
 
 import { compose, getRunningContainers, getContainerStats } from '../../lib/docker.js';
 import { status, colors } from '../../lib/output.js';
+
+/**
+ * Get Docker configuration from context
+ */
+function getDockerConfig(context) {
+  return context.config?.execution?.docker || {};
+}
+
+/**
+ * Get container mappings from config
+ */
+function getContainers(context) {
+  return getDockerConfig(context).containers || {};
+}
+
+/**
+ * Get reloadable containers from config
+ */
+function getReloadableContainers(context) {
+  const dockerConfig = getDockerConfig(context);
+  const containers = dockerConfig.containers || {};
+  const reloadable = dockerConfig.reloadable || [];
+
+  // Map service names to container names
+  return reloadable
+    .map(service => containers[service] || service)
+    .filter(Boolean);
+}
 
 /**
  * Start all containers
@@ -16,16 +47,25 @@ export const up = {
     { flags: '--build', description: 'Build containers before starting' }
   ],
   action: async (options, context) => {
-    const { paths } = context;
-    const args = ['up', '-d'];
+    const executor = context.getExecutor();
 
-    if (options.build) {
-      args.push('--build');
+    if (!executor) {
+      status.error('Execution context not configured');
+      console.log('');
+      console.log(colors.dim('Configure execution in cli.config.js:'));
+      console.log(colors.dim('  execution: { mode: "docker", docker: { ... } }'));
+      console.log('');
+      return;
     }
 
     status.info('Starting containers...');
 
-    await compose(paths.composeFile, paths.envFile, args);
+    const execOptions = {};
+    if (options.build) {
+      execOptions.build = true;
+    }
+
+    await executor.start(execOptions);
 
     status.success('Containers started');
   }
@@ -40,11 +80,16 @@ export const down = {
   description: 'Stop all containers',
   allowUnknownOption: true,
   action: async (options, context) => {
-    const { paths } = context;
+    const executor = context.getExecutor();
+
+    if (!executor) {
+      status.error('Execution context not configured');
+      return;
+    }
 
     status.info('Stopping containers...');
 
-    await compose(paths.composeFile, paths.envFile, ['down']);
+    await executor.stop();
 
     status.success('Containers stopped');
   }
@@ -58,11 +103,16 @@ export const restart = {
   category: 'Container Management',
   description: 'Restart all containers',
   action: async (options, context) => {
-    const { paths } = context;
+    const executor = context.getExecutor();
+
+    if (!executor) {
+      status.error('Execution context not configured');
+      return;
+    }
 
     status.info('Restarting containers...');
 
-    await compose(paths.composeFile, paths.envFile, ['restart']);
+    await executor.restart();
 
     status.success('Containers restarted');
   }
@@ -77,9 +127,18 @@ export const ps = {
   aliases: ['status'],
   description: 'Show container status',
   action: async (options, context) => {
-    const { paths } = context;
+    const executor = context.getExecutor();
 
-    await compose(paths.composeFile, paths.envFile, ['ps']);
+    if (!executor) {
+      status.error('Execution context not configured');
+      return;
+    }
+
+    const statusInfo = await executor.status();
+
+    if (statusInfo.output) {
+      console.log(statusInfo.output);
+    }
   }
 };
 
@@ -96,22 +155,19 @@ export const logs = {
   ],
   allowUnknownOption: true,
   action: async (options, context, variadicArgs) => {
-    const { paths } = context;
-    const args = ['logs'];
+    const executor = context.getExecutor();
 
-    if (options.follow) {
-      args.push('-f');
+    if (!executor) {
+      status.error('Execution context not configured');
+      return;
     }
 
-    if (options.tail) {
-      args.push('--tail', options.tail);
-    }
-
-    // Commander passes variadic args as a single array argument
     const services = Array.isArray(variadicArgs) ? variadicArgs : [];
-    args.push(...services);
 
-    await compose(paths.composeFile, paths.envFile, args);
+    await executor.logs(services, {
+      follow: options.follow,
+      tail: options.tail,
+    });
   }
 };
 
@@ -126,20 +182,22 @@ export const build = {
     { flags: '--no-cache', description: 'Build without cache' }
   ],
   action: async (options, context, variadicArgs) => {
-    const { paths } = context;
+    const dockerConfig = getDockerConfig(context);
+    const composeFile = dockerConfig.composeFile;
+    const envFile = context.config?.paths?.envFile;
+
     const args = ['build'];
 
     if (options.noCache) {
       args.push('--no-cache');
     }
 
-    // Commander passes variadic args as a single array argument
     const services = Array.isArray(variadicArgs) ? variadicArgs : [];
     args.push(...services);
 
     status.info('Building containers...');
 
-    await compose(paths.composeFile, paths.envFile, args);
+    await compose(composeFile, envFile, args);
 
     status.success('Build completed');
   }
@@ -153,12 +211,22 @@ export const stats = {
   category: 'Container Management',
   description: 'Show container resource usage',
   action: async (options, context) => {
-    const { containers } = context;
+    const containers = getContainers(context);
 
     status.info('Container resource usage...');
     console.log('');
 
     const containerNames = Object.values(containers);
+
+    if (containerNames.length === 0) {
+      status.warning('No containers configured');
+      console.log('');
+      console.log(colors.dim('Configure containers in cli.config.js:'));
+      console.log(colors.dim('  execution: { docker: { containers: { app: "myapp" } } }'));
+      console.log('');
+      return;
+    }
+
     const runningContainers = await getRunningContainers(containerNames.join('|'));
 
     if (runningContainers.length === 0) {
@@ -179,19 +247,25 @@ export const reload = {
   category: 'Container Management',
   description: 'Reload app containers for .env changes',
   action: async (options, context) => {
-    const { containers } = context;
-
     status.info('Reloading application containers (for .env changes)...');
     console.log('');
 
-    // Containers to reload - default to common ones
-    const containersToReload = [
-      containers.app,
-      containers.horizon,
-      containers.scheduler,
-      containers.queue,
-      containers.worker
-    ].filter(Boolean); // Remove undefined containers
+    // Get reloadable containers from config
+    const containersToReload = getReloadableContainers(context);
+
+    if (containersToReload.length === 0) {
+      status.warning('No reloadable containers configured');
+      console.log('');
+      console.log(colors.dim('Configure reloadable containers in cli.config.js:'));
+      console.log(colors.dim('  execution: {'));
+      console.log(colors.dim('    docker: {'));
+      console.log(colors.dim('      containers: { app: "myapp", worker: "myapp_worker" },'));
+      console.log(colors.dim('      reloadable: ["app", "worker"]'));
+      console.log(colors.dim('    }'));
+      console.log(colors.dim('  }'));
+      console.log('');
+      return;
+    }
 
     try {
       const { execa } = await import('execa');
@@ -237,7 +311,9 @@ export const rebuild = {
     { flags: '--no-cache', description: 'Build without cache' }
   ],
   action: async (options, context, variadicArgs) => {
-    const { paths } = context;
+    const dockerConfig = getDockerConfig(context);
+    const composeFile = dockerConfig.composeFile;
+    const envFile = context.config?.paths?.envFile;
 
     status.info('Rebuilding containers...');
     console.log('');
@@ -245,7 +321,7 @@ export const rebuild = {
     try {
       // Stop containers
       status.info('Stopping containers...');
-      await compose(paths.composeFile, paths.envFile, ['down']);
+      await compose(composeFile, envFile, ['down']);
 
       // Build
       const buildArgs = ['build'];
@@ -258,11 +334,11 @@ export const rebuild = {
       buildArgs.push(...services);
 
       status.info('Building containers...');
-      await compose(paths.composeFile, paths.envFile, buildArgs);
+      await compose(composeFile, envFile, buildArgs);
 
       // Start
       status.info('Starting containers...');
-      await compose(paths.composeFile, paths.envFile, ['up', '-d']);
+      await compose(composeFile, envFile, ['up', '-d']);
 
       console.log('');
       status.success('Containers rebuilt and started');
@@ -281,7 +357,7 @@ export const bash = {
   category: 'Container Management',
   description: 'Open bash shell in container (default: app)',
   action: async (options, context, container) => {
-    const { containers } = context;
+    const containers = getContainers(context);
 
     // Default to app container if no container specified
     // If container name is provided, look it up in containers map first
@@ -295,6 +371,10 @@ export const bash = {
 
     if (!targetContainer) {
       status.error('No container specified and no default app container configured');
+      console.log('');
+      console.log(colors.dim('Configure containers in cli.config.js:'));
+      console.log(colors.dim('  execution: { docker: { containers: { app: "myapp" } } }'));
+      console.log('');
       return;
     }
 

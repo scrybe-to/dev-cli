@@ -1,59 +1,113 @@
 /**
- * Test Configuration for Scrybe
+ * CLI Configuration
  *
- * This is a test config to try out the new CLI without affecting anything
+ * Updated to the new generic CLI configuration format.
  */
 
 export default {
-  name: 'scrybe-new',
-  version: '0.1.0',
-  description: 'Testing new generic CLI with Scrybe',
-  framework: 'laravel',
+  // CLI Identity
+  name: 'coverforge',
+  binaryName: 'cf',
+  version: '1.0.0',
+  description: 'Development CLI for coverforge',
 
-  containers: {
-    app: 'scrybe_app',
-    database: 'scrybe_mysql',
-    redis: 'scrybe_redis',
-    webserver: 'scrybe_nginx',
-    queue: 'scrybe_horizon',
-    scheduler: 'scrybe_scheduler',
-    storage: 'scrybe_minio',
-  },
-
-  hosts: ['scrybe.test', 'admin.scrybe.test', 'partners.scrybe.test', 'api.scrybe.test'],
-
-  commands: {
-    docker: true,
-    framework: true,
-    database: true,
-    frontend: true,
-    system: true,
-    custom: [
-      // Add custom commands here when ready to test
-      // './examples/laravel/commands/rag.js',
-    ],
-  },
-
-  paths: {
-    projectRoot: '/Users/peterbedorjr/code/artifex/scrybe',
-    composeFile: 'docker-compose.yml',
-    envFile: '.env',
-  },
-
-  branding: {
-    banner: true,
-    asciiBanner: {
-      text: 'MEDIA COVERS',
-      font: 'ANSI Shadow',
-      gradient: true,
-      gradientColors: ['#fbc2eb', '#a6c1ee'],
+  // Execution context configuration
+  execution: {
+    mode: 'docker',
+    docker: {
+      composeFile: 'compose.yaml',
+      containers: {
+        webserver: 'coverforge_nginx',
+        adminer: 'coverforge_adminer',
+        queue: 'coverforge_horizon',
+        scheduler: 'coverforge_scheduler',
+        app: 'coverforge_app',
+        redisCommander: 'coverforge_redis_commander',
+        redis: 'coverforge_redis',
+        database: 'coverforge_mysql',
+        traefik: 'coverforge_traefik',
+        soketi: 'coverforge_soketi',
+        mail: 'coverforge_mailpit',
+        rustfs: 'coverforge_rustfs',
+      },
+      // Containers to restart when running `reload` command
+      reloadable: ['app', 'queue', 'scheduler'],
+    },
+    native: {
+      shell: process.env.SHELL || '/bin/bash',
+    },
+    ssh: {
+      host: '',
+      user: '',
     },
   },
 
-  laravel: {
-    artisanPath: 'php artisan',
-    composerPath: 'composer',
-    testCommand: 'php artisan test',
-    formatterCommand: './vendor/bin/pint',
+  // Database provider configuration
+  database: {
+    driver: 'mysql',
+    credentialSource: 'env',
+    envMapping: {
+      host: 'DB_HOST',
+      port: 'DB_PORT',
+      database: 'DB_DATABASE',
+      username: 'DB_USERNAME',
+      password: 'DB_PASSWORD',
+    },
+    backup: {
+      path: './backups/database',
+    },
+  },
+
+  // Storage provider configuration
+  storage: {
+    driver: 'filesystem',
+    filesystem: {
+      basePath: './storage',
+      backupPath: './backups',
+      snapshotPath: './snapshots',
+    },
+  },
+
+  // Hosts management configuration
+  hosts: {
+    driver: 'none',
+    entries: [],
+    ip: '127.0.0.1',
+  },
+
+  // Path configuration
+  paths: {
+    projectRoot: process.cwd(),
+    envFile: '.env',
+  },
+
+  // Plugins configuration
+  plugins: {
+    enabled: ['laravel'],
+    config: {
+      laravel: {
+        // Laravel-specific configuration (optional)
+      },
+    },
+  },
+
+  // Command groups
+  commands: {
+    docker: true,
+    database: true,
+    storage: true,
+    system: true,
+    custom: ['./commands/dev.js'],
+  },
+
+  // Branding configuration
+  branding: {
+    banner: true,
+    asciiBanner: {
+      text: 'coverforge',
+      font: 'ANSI Shadow',
+      gradient: true,
+      gradientColors: ['#f12711', '#f5af19'],
+    },
   },
 };
