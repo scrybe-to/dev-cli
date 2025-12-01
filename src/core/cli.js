@@ -129,7 +129,10 @@ export async function createCLI(options = {}) {
         commandUsage: (cmd) => colors.teal(cmd.name()) + ' ' + colors.dim(cmd.usage()),
         optionTerm: (option) => colors.magenta(option.flags),
         optionDescription: (option) => option.description,
-        visibleCommands: () => [], // Hide default Commands section (we build our own)
+        visibleCommands: (cmd) => {
+          // Show subcommands if this command has them, otherwise hide (we build our own top-level help)
+          return cmd.commands.length > 0 ? cmd.commands : [];
+        },
       });
 
     // Display banner if enabled
