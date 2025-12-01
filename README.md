@@ -106,6 +106,42 @@ export default {
 };
 ```
 
+### Commands with Subcommands
+
+You can group related commands under a parent command using `subcommands`:
+
+```javascript
+// commands/cache.js
+export default {
+  name: 'cache',
+  description: 'Cache management commands',
+  subcommands: [
+    {
+      name: 'clear',
+      description: 'Clear all caches',
+      action: async (options, context) => {
+        // Clear cache logic
+      }
+    },
+    {
+      name: 'warmup',
+      description: 'Warm up caches',
+      options: [
+        { flags: '--tags <tags>', description: 'Cache tags to warm' }
+      ],
+      action: async (options, context) => {
+        // Warmup logic
+      }
+    }
+  ]
+};
+```
+
+This creates:
+- `dev-cli cache` - Shows help with available subcommands
+- `dev-cli cache clear` - Runs the clear action
+- `dev-cli cache warmup --tags=views` - Runs warmup with options
+
 ## API Reference
 
 ### Exports
