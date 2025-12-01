@@ -1,5 +1,5 @@
 {
-  "name": "@artifex/dev-cli",
+  "name": "@scrybe/dev-cli",
   "version": "0.1.0",
   "description": "Generic, configurable Docker development CLI",
   "type": "module",
@@ -18,7 +18,7 @@
     "./lib/utils": "./src/lib/utils.js"
   },
   "bin": {
-    "dev-cli": "./bin/dev-cli.js"
+    "dev-cli": "bin/dev-cli.js"
   },
   "files": [
     "bin",
